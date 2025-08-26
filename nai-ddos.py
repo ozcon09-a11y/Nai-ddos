@@ -230,3 +230,58 @@ def main():
     args = parser.parse_args()
 
     print_banner()
+
+    # prepare job queue (optional mixed endpoints)
+    job_q = queue.Queue()
+    headers = {}
+    for h in args.header:
+        if ":" in h:
+            k, v = h.split(":", 1)
+            headers[k.strip()] = v.strip()
+
+    payload = None
+    if args.payload:
+        # rough parse: try JSON then fall back to raw string
+        import json
+        try:
+            payload = json.loads(args.payload)
+        except json.JSONDecodeError:
+            payload = args.payload
+
+    # push a few starter jobs so workers don't block
+    for _ in range(min(1000, args.threads * 10)):
+        job_q.put((args.method, args.url, payload, headers))
+
+    signal.signal(signal.SIGINT, sigint_handler)
+
+    metrics = Metrics()
+    start_ts = time.time() + 1.0  # 1s warmup before launch
+    end_ts = start_ts + args.duration
+
+    threads = []
+    for i in range(args.threads):
+        t = threading.Thread(target=worker, args=(i, args, job_q, metrics,>
+        t.start()
+        threads.append(t)
+
+    # countdown with flashy spinner
+    print(Fore.YELLOW + Style.BRIGHT + "Arming in: ", end="", flush=True)
+    for s in range(3, 0, -1):
+        for frame in SPINNER_FRAMES:
+            sys.stdout.write(f"\r{Fore.YELLOW}{frame} Launch in {s}…")
+            sys.stdout.flush()
+            time.sleep(0.08)
+    print(f"\r{Fore.GREEN}🚀 Launch!{' ' * 20}")
+
+    # wait for completion
+    while time.time() < end_ts and not shutdown_flag.is_set():
+        time.sleep(0.2)
+    shutdown_flag.set()
+
+    for t in threads:
+        t.join(timeout=1)
+
+    print_report(args, metrics, start_ts, min(time.time(), end_ts))
+
+if __name__ == "__main__":
+    main()
